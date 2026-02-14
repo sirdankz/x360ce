@@ -38,6 +38,8 @@ jobs:
       - name: Build desktop apps (try Release then Debug)
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           function Try-Build([string]$proj, [string]$cfg, [string]$plat) {
             Write-Host "Trying $proj  Configuration=$cfg  Platform=$plat"
             & msbuild $proj /m /t:Build /p:Configuration="$cfg" /p:Platform="$plat"
@@ -48,26 +50,24 @@ jobs:
             Write-Host "----"
             Write-Host "Project: $proj"
 
-            # Try the common platform spellings in a safe order
             $plats = @("Any CPU", "AnyCPU", "x64", "x86", "Win32")
             $cfgs  = @("Release", "Debug")
 
             foreach ($cfg in $cfgs) {
               foreach ($plat in $plats) {
-                if (Try-Build $proj $cfg $plat) {
+                $ok = Try-Build $proj $cfg $plat
+                if ($ok) {
                   Write-Host "SUCCESS: $proj ($cfg|$plat)"
+                  # Important: clear any previous non-zero exit code
+                  $global:LASTEXITCODE = 0
                   return
                 }
-
-                # If OutputPath isn't set, it usually means that cfg|plat combo doesn't exist.
-                # Keep trying other combos.
               }
             }
 
             throw "Failed to build $proj with any attempted Configuration/Platform combo."
           }
 
-          # Prefer WPF app if it builds, but also try non-WPF app
           $candidates = @(
             "x360ce.App.WPF\x360ce.App.WPF.csproj",
             "x360ce.App\x360ce.App.csproj"
@@ -88,6 +88,9 @@ jobs:
             Get-ChildItem -Recurse -Filter *.csproj | Select-Object FullName
             exit 1
           }
+
+          # Final safety: ensure this step exits success
+          exit 0
 
       - name: Package outputs
         shell: pwsh
