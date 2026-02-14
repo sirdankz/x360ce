@@ -1,4 +1,4 @@
-name: Build x360ce (Release)
+name: Build x360ce (Desktop apps)
 
 on:
   workflow_dispatch:
@@ -10,7 +10,6 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-
     strategy:
       fail-fast: false
 
@@ -27,75 +26,65 @@ jobs:
       - name: Setup NuGet
         uses: NuGet/setup-nuget@v2
 
+      - name: Install .NET Framework targeting packs (needed for net45)
+        shell: pwsh
+        run: |
+          choco --version
+          choco install -y netfx-4.5.2-devpack
+
       - name: NuGet restore
         run: nuget restore x360ce.sln
 
-      - name: Build desktop apps (Release)
+      - name: Build desktop apps (try Release then Debug)
         shell: pwsh
         run: |
-          function Get-ProjectPlatforms([string]$csprojPath) {
-            try {
-              [xml]$xml = Get-Content $csprojPath
-              $platformNodes = $xml.Project.PropertyGroup.Platforms
-              $plats = @()
-              foreach ($n in $platformNodes) {
-                if ($n -and $n.'#text') {
-                  $plats += ($n.'#text' -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-                }
-              }
-              return ($plats | Select-Object -Unique)
-            } catch {
-              return @()
-            }
+          function Try-Build([string]$proj, [string]$cfg, [string]$plat) {
+            Write-Host "Trying $proj  Configuration=$cfg  Platform=$plat"
+            & msbuild $proj /m /t:Build /p:Configuration="$cfg" /p:Platform="$plat"
+            return ($LASTEXITCODE -eq 0)
           }
 
-          function Build-Project([string]$p) {
+          function Build-Project([string]$proj) {
             Write-Host "----"
-            Write-Host "Project: $p"
+            Write-Host "Project: $proj"
 
-            $plats = Get-ProjectPlatforms $p
-            if ($plats.Count -eq 0) {
-              $plats = @("Any CPU","AnyCPU","x64","x86","Win32")
-            }
+            # Try the common platform spellings in a safe order
+            $plats = @("Any CPU", "AnyCPU", "x64", "x86", "Win32")
+            $cfgs  = @("Release", "Debug")
 
-            $preferred = @("Any CPU","AnyCPU","x64","x86","Win32")
-            $ordered = @()
-            foreach ($pref in $preferred) {
-              if ($plats -contains $pref) { $ordered += $pref }
-            }
-            foreach ($pl in $plats) {
-              if (-not ($ordered -contains $pl)) { $ordered += $pl }
-            }
+            foreach ($cfg in $cfgs) {
+              foreach ($plat in $plats) {
+                if (Try-Build $proj $cfg $plat) {
+                  Write-Host "SUCCESS: $proj ($cfg|$plat)"
+                  return
+                }
 
-            foreach ($plat in $ordered) {
-              Write-Host "Trying Configuration=Release Platform=$plat"
-              & msbuild $p /m /p:Configuration=Release /p:Platform="$plat" /t:Build
-              if ($LASTEXITCODE -eq 0) {
-                Write-Host "SUCCESS: $p (Release|$plat)"
-                return
+                # If OutputPath isn't set, it usually means that cfg|plat combo doesn't exist.
+                # Keep trying other combos.
               }
             }
 
-            throw "Failed to build $p with Release on all attempted platforms: $($ordered -join ', ')"
+            throw "Failed to build $proj with any attempted Configuration/Platform combo."
           }
 
-          $projects = @(
+          # Prefer WPF app if it builds, but also try non-WPF app
+          $candidates = @(
             "x360ce.App.WPF\x360ce.App.WPF.csproj",
             "x360ce.App\x360ce.App.csproj"
           )
 
-          $builtAny = $false
-          foreach ($p in $projects) {
+          $found = $false
+          foreach ($p in $candidates) {
             if (Test-Path $p) {
+              $found = $true
               Build-Project $p
-              $builtAny = $true
             } else {
               Write-Host "Skipping missing project: $p"
             }
           }
 
-          if (-not $builtAny) {
-            Write-Host "No expected desktop projects were found. Listing *.csproj for troubleshooting..."
+          if (-not $found) {
+            Write-Host "No expected desktop projects found. Listing all .csproj files:"
             Get-ChildItem -Recurse -Filter *.csproj | Select-Object FullName
             exit 1
           }
@@ -104,13 +93,11 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          $zip = "artifacts/x360ce_Release.zip"
+          $zip = "artifacts/x360ce_desktop_build.zip"
 
           $paths = @(
-            "x360ce.App\bin\Release",
-            "x360ce.App.WPF\bin\Release",
-            "x360ce.App.Beta\bin\Release",
-            "x360ce\bin\Release"
+            "x360ce.App\bin",
+            "x360ce.App.WPF\bin"
           )
 
           $existing = @()
@@ -119,7 +106,7 @@ jobs:
           }
 
           if ($existing.Count -eq 0) {
-            Write-Host "No known output folders found. Listing bin folders for troubleshooting..."
+            Write-Host "No bin output folders found. Listing repository bin folders for troubleshooting..."
             Get-ChildItem -Recurse -Directory -Filter bin | Select-Object FullName
             exit 1
           }
@@ -130,5 +117,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: x360ce_Release
+          name: x360ce_desktop_build
           path: artifacts/*.zip
