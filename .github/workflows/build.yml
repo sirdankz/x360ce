@@ -58,7 +58,7 @@ jobs:
                 $ok = Try-Build $proj $cfg $plat
                 if ($ok) {
                   Write-Host "SUCCESS: $proj ($cfg|$plat)"
-                  # Important: clear any previous non-zero exit code
+                  # Clear any previous non-zero exit code from earlier failed attempts
                   $global:LASTEXITCODE = 0
                   return
                 }
@@ -89,65 +89,36 @@ jobs:
             exit 1
           }
 
-          # Final safety: ensure this step exits success
           exit 0
 
-      - name: Package outputs
+      - name: Find built EXEs (log paths)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "Searching for EXEs after build..."
+          $exes = Get-ChildItem -Recurse -File -Filter *.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\\.git\\' }
+
+          if ($exes.Count -eq 0) {
+            Write-Host "No EXEs found anywhere in the repo after build."
+          } else {
+            Write-Host "Found EXEs (top 50 by size):"
+            $exes | Sort-Object Length -Descending | Select-Object -First 50 FullName, Length | Format-Table -AutoSize
+          }
+
+      - name: Package outputs (brute force)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          $zip = "artifacts/x360ce_desktop_build.zip"
-
-          # Find likely desktop outputs (EXE) under common build folders
-          $roots = @(
-            "x360ce.App",
-            "x360ce.App.WPF",
-            "x360ce.App.Beta",
-            "artifacts"
-          )
-
-          $foundFiles = @()
-
-          foreach ($r in $roots) {
-            if (Test-Path $r) {
-              # Look for built executables and important dlls
-              $foundFiles += Get-ChildItem -Path $r -Recurse -File -ErrorAction SilentlyContinue `
-                | Where-Object {
-                    $_.FullName -match '\\(bin|obj|artifacts)\\' -and
-                    ($_.Name -match '\.exe$' -or $_.Name -match '\.dll$')
-                  }
-            }
-          }
-
-          # Prefer exes first (what you actually want)
-          $exeFiles = $foundFiles | Where-Object { $_.Name -match '\.exe$' }
-          if ($exeFiles.Count -eq 0) {
-            Write-Host "No EXEs found. Listing top-level Release-ish directories for debugging..."
-            Get-ChildItem -Recurse -Directory -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match '\\Release\\' -or $_.Name -match 'Release' } |
-              Select-Object -First 50 FullName
-            exit 1
-          }
-
-          Write-Host "Found EXEs:"
-          $exeFiles | Select-Object -First 30 FullName | ForEach-Object { Write-Host " - $($_.FullName)" }
-
-          # Create a staging folder and copy only the relevant output directories containing EXEs
-          $stage = "artifacts\stage"
-          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
-
-          $exeDirs = $exeFiles | Select-Object -ExpandProperty DirectoryName -Unique
-
-          foreach ($d in $exeDirs) {
-            $dest = Join-Path $stage (Split-Path $d -Leaf)
-            Copy-Item -Path $d -Destination $dest -Recurse -Force
-          }
-
+          $zip = "artifacts/x360ce_repo_after_build.zip"
           if (Test-Path $zip) { Remove-Item $zip -Force }
-          Compress-Archive -Path $stage\* -DestinationPath $zip -Force
+
+          # Exclude .git to keep it smaller
+          $items = Get-ChildItem -Force | Where-Object { $_.Name -ne ".git" }
+
+          Compress-Archive -Path $items.FullName -DestinationPath $zip -Force
 
           Write-Host "Created $zip"
           Get-Item $zip | Format-List Name,Length,FullName
@@ -155,6 +126,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: x360ce_desktop_build
+          name: x360ce_repo_after_build
           path: artifacts/*.zip
-
