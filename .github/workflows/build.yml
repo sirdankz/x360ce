@@ -106,17 +106,20 @@ jobs:
             $exes | Sort-Object Length -Descending | Select-Object -First 50 FullName, Length | Format-Table -AutoSize
           }
 
-      - name: Package outputs (brute force)
+      - name: Package outputs (brute force, safe path)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          $zip = "artifacts/x360ce_repo_after_build.zip"
+          # Write the zip outside the repo to avoid locking/self-zipping issues
+          $outDir = "C:\temp"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+          $zip = Join-Path $outDir "x360ce_repo_after_build_${{ github.run_id }}.zip"
           if (Test-Path $zip) { Remove-Item $zip -Force }
 
-          # Exclude .git to keep it smaller
-          $items = Get-ChildItem -Force | Where-Object { $_.Name -ne ".git" }
+          # Exclude .git AND exclude the repo's artifacts folder (prevents zipping a zip)
+          $items = Get-ChildItem -Force | Where-Object { $_.Name -ne ".git" -and $_.Name -ne "artifacts" }
 
           Compress-Archive -Path $items.FullName -DestinationPath $zip -Force
 
@@ -127,4 +130,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: x360ce_repo_after_build
-          path: artifacts/*.zip
+          path: C:\temp\x360ce_repo_after_build_${{ github.run_id }}.zip
