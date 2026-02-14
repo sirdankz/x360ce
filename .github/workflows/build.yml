@@ -1,51 +1,64 @@
-name: Build x360ce (Release)
-
-on:
-  workflow_dispatch:
-  push:
-    branches: [ "master" ]
-  pull_request:
-    branches: [ "master" ]
-
-jobs:
-  build:
-    runs-on: windows-latest
-
-    strategy:
-      fail-fast: false
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Setup NuGet
-        uses: NuGet/setup-nuget@v2
-
-      - name: NuGet restore
-        run: nuget restore x360ce.sln
-
-      # Build ONLY desktop app projects (skip x360ce.Web which fails on runners)
       - name: Build desktop apps (Release)
         shell: pwsh
         run: |
+          function Get-ProjectPlatforms([string]$csprojPath) {
+            # Try to read <Platforms>AnyCPU;x64</Platforms> etc.
+            try {
+              [xml]$xml = Get-Content $csprojPath
+              $platformNodes = $xml.Project.PropertyGroup.Platforms
+              $plats = @()
+              foreach ($n in $platformNodes) {
+                if ($n -and $n.'#text') {
+                  $plats += ($n.'#text' -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                }
+              }
+              return ($plats | Select-Object -Unique)
+            } catch {
+              return @()
+            }
+          }
+
+          function Build-Project([string]$p) {
+            Write-Host "----"
+            Write-Host "Project: $p"
+
+            $plats = Get-ProjectPlatforms $p
+            if ($plats.Count -eq 0) {
+              # Common fallbacks if <Platforms> isn't present
+              $plats = @("Any CPU","AnyCPU","x64","x86","Win32")
+            }
+
+            # Prefer AnyCPU first, then x64, then x86/Win32
+            $preferred = @("Any CPU","AnyCPU","x64","x86","Win32")
+            $ordered = @()
+            foreach ($pref in $preferred) {
+              if ($plats -contains $pref) { $ordered += $pref }
+            }
+            foreach ($pl in $plats) {
+              if (-not ($ordered -contains $pl)) { $ordered += $pl }
+            }
+
+            foreach ($plat in $ordered) {
+              Write-Host "Trying Configuration=Release Platform=$plat"
+              & msbuild $p /m /p:Configuration=Release /p:Platform="$plat" /t:Build
+              if ($LASTEXITCODE -eq 0) {
+                Write-Host "SUCCESS: $p (Release|$plat)"
+                return
+              }
+            }
+
+            throw "Failed to build $p with Release on all attempted platforms: $($ordered -join ', ')"
+          }
+
           $projects = @(
-            "x360ce.App\x360ce.App.csproj",
             "x360ce.App.WPF\x360ce.App.WPF.csproj",
-            "x360ce.App.Beta\x360ce.App.Beta.csproj",
-            "x360ce\x360ce.csproj"
+            "x360ce.App\x360ce.App.csproj"
           )
 
           $builtAny = $false
           foreach ($p in $projects) {
             if (Test-Path $p) {
-              Write-Host "Building $p"
-              msbuild $p /m /p:Configuration=Release /p:Platform="Any CPU" /t:Build
+              Build-Project $p
               $builtAny = $true
             } else {
               Write-Host "Skipping missing project: $p"
@@ -53,40 +66,7 @@ jobs:
           }
 
           if (-not $builtAny) {
-            Write-Host "No expected desktop projects were found. Listing *.csproj for troubleshooting..."
+            Write-Host "No expected desktop projects were found. Listing likely candidates..."
             Get-ChildItem -Recurse -Filter *.csproj | Select-Object FullName
             exit 1
           }
-
-      - name: Package outputs
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          $zip  = "artifacts/x360ce_AnyCPU_Release.zip"
-
-          $paths = @(
-            "x360ce.App\bin\Release",
-            "x360ce.App.WPF\bin\Release",
-            "x360ce.App.Beta\bin\Release",
-            "x360ce\bin\Release"
-          )
-
-          $existing = @()
-          foreach ($p in $paths) {
-            if (Test-Path $p) { $existing += $p }
-          }
-
-          if ($existing.Count -eq 0) {
-            Write-Host "No known output folders found. Listing bin folders for troubleshooting..."
-            Get-ChildItem -Recurse -Directory -Filter bin | Select-Object FullName
-            exit 1
-          }
-
-          Compress-Archive -Path $existing -DestinationPath $zip -Force
-          Write-Host "Created $zip"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: x360ce_AnyCPU_Release
-          path: artifacts/*.zip
