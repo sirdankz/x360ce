@@ -92,30 +92,35 @@ jobs:
       - name: Package outputs
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           $zip = "artifacts/x360ce_desktop_build.zip"
 
-          $paths = @(
-            "x360ce.App\bin",
-            "x360ce.App.WPF\bin"
-          )
+          # Look for bin outputs broadly (Release output under bin\Release\...)
+          $bins = @()
+          if (Test-Path "x360ce.App\bin")     { $bins += "x360ce.App\bin" }
+          if (Test-Path "x360ce.App.WPF\bin") { $bins += "x360ce.App.WPF\bin" }
 
-          $existing = @()
-          foreach ($p in $paths) {
-            if (Test-Path $p) { $existing += $p }
-          }
-
-          if ($existing.Count -eq 0) {
-            Write-Host "No bin output folders found. Listing repository bin folders for troubleshooting..."
+          if ($bins.Count -eq 0) {
+            Write-Host "No bin folders found. Listing repo for troubleshooting:"
+            Get-ChildItem -Directory | Select-Object Name
             Get-ChildItem -Recurse -Directory -Filter bin | Select-Object FullName
             exit 1
           }
 
-          Compress-Archive -Path $existing -DestinationPath $zip -Force
+          Write-Host "Packaging these folders:"
+          $bins | ForEach-Object { Write-Host " - $_" }
+
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path $bins -DestinationPath $zip -Force
+
           Write-Host "Created $zip"
+          Get-Item $zip | Format-List Name,Length,FullName
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: x360ce_desktop_build
           path: artifacts/*.zip
+
