@@ -30,16 +30,38 @@ jobs:
       - name: NuGet restore
         run: nuget restore x360ce.sln
 
-      - name: Build (Release)
-        run: msbuild x360ce.sln /m /p:Configuration=Release /p:Platform="Any CPU" /t:Build
+      # Build ONLY desktop app projects (skip x360ce.Web which fails on runners)
+      - name: Build desktop apps (Release)
+        shell: pwsh
+        run: |
+          $projects = @(
+            "x360ce.App\x360ce.App.csproj",
+            "x360ce.App.WPF\x360ce.App.WPF.csproj",
+            "x360ce.App.Beta\x360ce.App.Beta.csproj",
+            "x360ce\x360ce.csproj"
+          )
 
-      # Collect common output folders (best-effort; won't fail if a folder doesn't exist)
+          $builtAny = $false
+          foreach ($p in $projects) {
+            if (Test-Path $p) {
+              Write-Host "Building $p"
+              msbuild $p /m /p:Configuration=Release /p:Platform="Any CPU" /t:Build
+              $builtAny = $true
+            } else {
+              Write-Host "Skipping missing project: $p"
+            }
+          }
+
+          if (-not $builtAny) {
+            Write-Host "No expected desktop projects were found. Listing *.csproj for troubleshooting..."
+            Get-ChildItem -Recurse -Filter *.csproj | Select-Object FullName
+            exit 1
+          }
+
       - name: Package outputs
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-
-          $plat = "${{ matrix.platform }}"
           $zip  = "artifacts/x360ce_AnyCPU_Release.zip"
 
           $paths = @(
