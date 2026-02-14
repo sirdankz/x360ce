@@ -1,0 +1,72 @@
+name: Build x360ce (Release)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ "x64", "x86" ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: NuGet restore
+        run: nuget restore x360ce.sln
+
+      - name: Build (Release)
+        run: msbuild x360ce.sln /m /p:Configuration=Release /p:Platform=${{ matrix.platform }} /t:Build
+
+      # Collect common output folders (best-effort; won't fail if a folder doesn't exist)
+      - name: Package outputs
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+
+          $plat = "${{ matrix.platform }}"
+          $zip  = "artifacts/x360ce_${plat}_Release.zip"
+
+          $paths = @(
+            "x360ce.App\bin\Release",
+            "x360ce.App.WPF\bin\Release",
+            "x360ce.App.Beta\bin\Release",
+            "x360ce\bin\Release"
+          )
+
+          $existing = @()
+          foreach ($p in $paths) {
+            if (Test-Path $p) { $existing += $p }
+          }
+
+          if ($existing.Count -eq 0) {
+            Write-Host "No known output folders found. Listing bin folders for troubleshooting..."
+            Get-ChildItem -Recurse -Directory -Filter bin | Select-Object FullName
+            exit 1
+          }
+
+          Compress-Archive -Path $existing -DestinationPath $zip -Force
+          Write-Host "Created $zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: x360ce_${{ matrix.platform }}_Release
+          path: artifacts/*.zip
