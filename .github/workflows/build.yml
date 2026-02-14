@@ -13,8 +13,6 @@ jobs:
 
     strategy:
       fail-fast: false
-      matrix:
-        platform: [ "x64", "Win32" ]
 
     steps:
       - name: Checkout
@@ -33,7 +31,7 @@ jobs:
         run: nuget restore x360ce.sln
 
       - name: Build (Release)
-        run: msbuild x360ce.sln /m /p:Configuration=Release /p:Platform=${{ matrix.platform }} /t:Build
+        run: msbuild x360ce.sln /m /p:Configuration=Release /p:Platform="Any CPU" /t:Build
 
       # Collect common output folders (best-effort; won't fail if a folder doesn't exist)
       - name: Package outputs
@@ -42,7 +40,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
 
           $plat = "${{ matrix.platform }}"
-          $zip  = "artifacts/x360ce_${plat}_Release.zip"
+          $zip  = "artifacts/x360ce_AnyCPU_Release.zip"
 
           $paths = @(
             "x360ce.App\bin\Release",
@@ -68,5 +66,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: x360ce_${{ matrix.platform }}_Release
+          name: x360ce_AnyCPU_Release
           path: artifacts/*.zip
