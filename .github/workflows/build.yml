@@ -100,23 +100,54 @@ jobs:
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           $zip = "artifacts/x360ce_desktop_build.zip"
 
-          # Look for bin outputs broadly (Release output under bin\Release\...)
-          $bins = @()
-          if (Test-Path "x360ce.App\bin")     { $bins += "x360ce.App\bin" }
-          if (Test-Path "x360ce.App.WPF\bin") { $bins += "x360ce.App.WPF\bin" }
+          # Find likely desktop outputs (EXE) under common build folders
+          $roots = @(
+            "x360ce.App",
+            "x360ce.App.WPF",
+            "x360ce.App.Beta",
+            "artifacts"
+          )
 
-          if ($bins.Count -eq 0) {
-            Write-Host "No bin folders found. Listing repo for troubleshooting:"
-            Get-ChildItem -Directory | Select-Object Name
-            Get-ChildItem -Recurse -Directory -Filter bin | Select-Object FullName
+          $foundFiles = @()
+
+          foreach ($r in $roots) {
+            if (Test-Path $r) {
+              # Look for built executables and important dlls
+              $foundFiles += Get-ChildItem -Path $r -Recurse -File -ErrorAction SilentlyContinue `
+                | Where-Object {
+                    $_.FullName -match '\\(bin|obj|artifacts)\\' -and
+                    ($_.Name -match '\.exe$' -or $_.Name -match '\.dll$')
+                  }
+            }
+          }
+
+          # Prefer exes first (what you actually want)
+          $exeFiles = $foundFiles | Where-Object { $_.Name -match '\.exe$' }
+          if ($exeFiles.Count -eq 0) {
+            Write-Host "No EXEs found. Listing top-level Release-ish directories for debugging..."
+            Get-ChildItem -Recurse -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '\\Release\\' -or $_.Name -match 'Release' } |
+              Select-Object -First 50 FullName
             exit 1
           }
 
-          Write-Host "Packaging these folders:"
-          $bins | ForEach-Object { Write-Host " - $_" }
+          Write-Host "Found EXEs:"
+          $exeFiles | Select-Object -First 30 FullName | ForEach-Object { Write-Host " - $($_.FullName)" }
+
+          # Create a staging folder and copy only the relevant output directories containing EXEs
+          $stage = "artifacts\stage"
+          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          $exeDirs = $exeFiles | Select-Object -ExpandProperty DirectoryName -Unique
+
+          foreach ($d in $exeDirs) {
+            $dest = Join-Path $stage (Split-Path $d -Leaf)
+            Copy-Item -Path $d -Destination $dest -Recurse -Force
+          }
 
           if (Test-Path $zip) { Remove-Item $zip -Force }
-          Compress-Archive -Path $bins -DestinationPath $zip -Force
+          Compress-Archive -Path $stage\* -DestinationPath $zip -Force
 
           Write-Host "Created $zip"
           Get-Item $zip | Format-List Name,Length,FullName
