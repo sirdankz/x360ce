@@ -35,24 +35,14 @@ jobs:
       - name: NuGet restore
         run: nuget restore x360ce.sln
 
-      - name: Build desktop apps (force output to artifacts/out)
+      - name: Build desktop apps (try Release then Debug)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          $outRoot = Join-Path $PWD "artifacts\out"
-          New-Item -ItemType Directory -Force -Path $outRoot | Out-Null
-
           function Try-Build([string]$proj, [string]$cfg, [string]$plat) {
             Write-Host "Trying $proj  Configuration=$cfg  Platform=$plat"
-
-            & msbuild $proj /m /t:Build `
-              /p:Configuration="$cfg" `
-              /p:Platform="$plat" `
-              /p:BaseOutputPath="$outRoot\" `
-              /p:OutputPath="$outRoot\" `
-              /v:m
-
+            & msbuild $proj /m /t:Build /p:Configuration="$cfg" /p:Platform="$plat"
             return ($LASTEXITCODE -eq 0)
           }
 
@@ -65,7 +55,8 @@ jobs:
 
             foreach ($cfg in $cfgs) {
               foreach ($plat in $plats) {
-                if (Try-Build $proj $cfg $plat) {
+                $ok = Try-Build $proj $cfg $plat
+                if ($ok) {
                   Write-Host "SUCCESS: $proj ($cfg|$plat)"
                   $global:LASTEXITCODE = 0
                   return
@@ -97,39 +88,76 @@ jobs:
             exit 1
           }
 
-          Write-Host "`n=== Contents of artifacts/out (first 200 files) ==="
-          Get-ChildItem -Recurse -Path $outRoot -File | Select-Object -First 200 FullName, Length
+          exit 0
 
-      - name: Verify built EXE exists in artifacts/out
+      - name: Find & stage real app outputs
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $outRoot = Join-Path $PWD "artifacts\out"
 
-          Write-Host "Searching for EXEs under $outRoot ..."
-          $exes = Get-ChildItem -Recurse -Path $outRoot -File -Filter *.exe -ErrorAction SilentlyContinue
+          $stage = Join-Path $PWD "artifacts\stage"
+          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-          if ($exes.Count -eq 0) {
-            Write-Host "No EXEs found under artifacts/out."
-            Write-Host "Dumping folder tree for debugging:"
-            Get-ChildItem -Recurse -Path $outRoot -Force | Select-Object -First 400 FullName
-            throw "Build did not produce an EXE in artifacts/out"
+          # Search only where desktop app outputs should live
+          $roots = @("x360ce.App.WPF", "x360ce.App", "x360ce.App.Beta")
+
+          # Find EXEs in bin/Release/Debug, but exclude known tool/resource EXEs
+          $badExeNames = @(
+            "convert.exe", "svnrev.exe", "netz.exe", "ditool.exe", "XInputTest.exe",
+            "DIView.exe", "DXTweak2.exe"
+          )
+
+          $foundExe = @()
+
+          foreach ($r in $roots) {
+            if (-not (Test-Path $r)) { continue }
+
+            $foundExe += Get-ChildItem -Path $r -Recurse -File -Filter *.exe -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.FullName -match '\\(bin|Release|Debug)\\' -and
+                ($badExeNames -notcontains $_.Name)
+              }
           }
 
-          Write-Host "Found EXEs:"
-          $exes | Sort-Object Length -Descending | Select-Object -First 30 FullName, Length | Format-Table -AutoSize
+          if ($foundExe.Count -eq 0) {
+            Write-Host "No candidate app EXEs found under bin/Release/Debug in x360ce.App*."
+            Write-Host "For debugging, here's every EXE under those roots (top 80 by size):"
+            $all = @()
+            foreach ($r in $roots) {
+              if (Test-Path $r) {
+                $all += Get-ChildItem -Path $r -Recurse -File -Filter *.exe -ErrorAction SilentlyContinue
+              }
+            }
+            $all | Sort-Object Length -Descending | Select-Object -First 80 FullName, Length | Format-Table -AutoSize
+            throw "App EXE not found. Build succeeded but output location/name is unexpected."
+          }
 
-      - name: Package outputs (ONLY artifacts/out)
+          Write-Host "Found candidate app EXEs:"
+          $foundExe | Sort-Object Length -Descending | Select-Object FullName, Length | Format-Table -AutoSize
+
+          # Copy the containing directories into stage (keeps DLLs/config next to exe)
+          $exeDirs = $foundExe | Select-Object -ExpandProperty DirectoryName -Unique
+          foreach ($d in $exeDirs) {
+            $leaf = Split-Path $d -Leaf
+            $dest = Join-Path $stage $leaf
+            Write-Host "Staging folder: $d -> $dest"
+            Copy-Item -Path $d -Destination $dest -Recurse -Force
+          }
+
+          Write-Host "`nStage contents:"
+          Get-ChildItem -Recurse -Path $stage -File | Select-Object -First 200 FullName, Length
+
+      - name: Package staged outputs
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          $outRoot = Join-Path $PWD "artifacts\out"
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           $zip = Join-Path $PWD "artifacts\x360ce_desktop_outputs.zip"
-
           if (Test-Path $zip) { Remove-Item $zip -Force }
 
-          Compress-Archive -Path "$outRoot\*" -DestinationPath $zip -Force
+          Compress-Archive -Path (Join-Path $PWD "artifacts\stage\*") -DestinationPath $zip -Force
 
           Write-Host "Created $zip"
           Get-Item $zip | Format-List Name,Length,FullName
